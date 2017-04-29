@@ -63,12 +63,3 @@ Function Select-DropdownItem($dropwDownID, $selectionValue)
 
 # Start IE session
 $browser = Start-IE
-
-# Navigate to ART home page
-Navigate-IE -URL "http://www.microsoft.com/technet/scriptcenter/default.mspx"
-Write-Host "browser data:" $browser
-Navigate-IE -URL "https://adis-arkncws02/PasswordVault/logon.aspx?ReturnUrl=%2fPasswordVault%2f"
-
-# Find the "New Request" button and click it
-
-Write-Host "break here"
