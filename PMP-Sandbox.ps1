@@ -1,4 +1,4 @@
-$pmpAPIKey = "YOUR-PasswordManagerPro-API-Key-Here"
+$pmpAPIKey = "Your-PasswordManagerPro-API-Key-Here"
 $pmpServer = "https://<PMP SERVER ADDRESS>:<PMP SERVER PORT>"
 
 Function Get-OwnedResources()
