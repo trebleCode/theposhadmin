@@ -353,6 +353,51 @@ Function RunAs-ElevatedLocalAdmin($Domain)
     Start-Process powershell.exe -Credential $(Get-Credential -UserName $Domain\$ENV:USERNAME) -NoNewWindow -ArgumentList “Start-Process powershell.exe -Verb runAs”
 }
 
+function Sync-ScriptDirectories()
+{
+    # one-way sync from a local disk directory to a network/redirected profile directory
+
+    $path1 = $profile.Trim("Microsoft.PowerShell_profile.ps1")
+    $path1 = $path1+"Scripts"
+
+    $path2 = "$ENV:USERPROFILE\Desktop\Scripts"
+
+    $contentPath1 = gci $path1
+    $contentPath2 = gci $path2
+
+
+    Write-Output "Ref dir: $path1"
+    Write-Output "Diff dir: $path2"
+
+    $FileDiffs = Compare-Object -ReferenceObject @($contentPath2 | Select-Object) -DifferenceObject @($contentPath1 | Select-Object)
+
+    Write-Output "`nDifferences`n===============`n"
+
+    $FileDiffs
+
+    Write-Output "`nAttempting sync..."
+
+    $FileDiffs | Foreach {
+        $copyParams = @{
+            "Path" = $_.InputObject.FullName
+        }
+
+        Write-Output "Item: $($_.InputObject.FullName)"
+
+        if ($_.SideIndicator -eq "<=")
+        {
+            $copyParams.Destination = $path1
+        }
+        elseif ($_.SideIndicator -eq "=>")
+        {
+            $copyParams.Destination = $path2
+        }
+        Write-Output "Copy Path: $($copyParams.Destination)"
+
+        Copy-Item @copyParams
+    }
+}
+
 Customize-Host
 Show-Banner
 
