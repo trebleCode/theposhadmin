@@ -5,7 +5,7 @@ Function ConnectTo-RemoteDomain
     Connects to a remote domain controller and establishes a new PS drive
 
     .EXAMPLE
-    ConnectTo-RemoteDomain -Domain
+    ConnectTo-RemoteDomain -Domain "my.example.com"
 #>
 [cmdletBinding()]
 param(
