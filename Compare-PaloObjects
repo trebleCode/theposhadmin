@@ -1,0 +1,371 @@
+<#
+    .SYNOPSIS
+    Gets all local objects in a firewall device group,
+    gets all shared objects in panorama,
+    runs comparisons, and outputs results.
+
+    .DESCRIPTION
+    Queries a specified device group for local objects and
+    shared objects via Panorama XML RESTful API.
+    Device group Names and Addresses are compared against
+    the same properties of Shared objects. All partial (one property) or
+    full matches (Name AND Address properties) are outpput to CSV.
+
+    .EXAMPLE
+    .\Compare-PaloObjects.ps1
+
+    .NOTES
+    
+    Call structure:
+
+    Enable-TLS1.2
+    Set-APIKey
+    Null-DynamicVars
+    Get-InitialData
+        -> Get-Matches
+            ->Export-Results
+
+#>
+
+BEGIN
+{
+    Function Enable-TLS1.2()
+    {
+        Write-Host "`nEnabling TLS 1.2"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+
+    Function Trust-AllCertsPolicy()
+{
+add-type @"
+    using System.Net;
+    using System.Security.Cryptography.X509Certificates;
+    public class TrustAllCertsPolicy : ICertificatePolicy {
+        public bool CheckValidationResult(
+            ServicePoint srvPoint, X509Certificate certificate,
+            WebRequest request, int certificateProblem) {
+            return true;
+        }
+    }
+"@
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+
+} 
+
+    Function Set-APIKey()
+    {
+        Write-Host "`nSetting API key"
+        $script:apiKey = "MYAPIKEY"
+    }
+
+    Function Null-DynamicVars()
+    {
+        $allDeviceGroupLocalObjects = $NULL
+        $allLocalDeviceGroupNodes = $NULL
+        $allSharedObjects = $NULL
+        $allSharedNodes = $NULL
+        $processedLocal = $NULL
+        $processedShared = $NULL
+        $nameCompareMatches = $NULL
+        $combinedNameMatches = $NULL
+        $addressCompareMatches = $NULL
+        $combinedAddressMatches = $NULL
+        $nonMatches = $NULL
+        $localOnlyMatches = $NULL
+        $sharedOnlyMatches = $NULL
+        $stagedPhaseMatches = $NULL
+        $allMatches = $NULL
+    }
+
+    Function Get-AllSharedObjects($IP)
+    {
+        Write-Host "`nGetting all Panorama shared objects"
+        $response = Invoke-RestMethod "https://$IP/api/?type=config&action=get&xpath=/config/shared/address&key=$apiKey" -Method GET
+        return [xml]$response
+    }
+
+    Function Get-AllLocalDomainAddresses($DeviceGroupName,$IP)
+    {
+        Write-Host "`nGeting all local objects in '$DeviceGroupName'"
+        if($IP -notmatch "panorama.bam.bamroot.net")
+        {
+            $response = Invoke-RestMethod -Uri "https://$IP/api/?key=$apiKey&type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='$DeviceGroupName']/address"
+        }
+        else
+        {
+            $response = Invoke-RestMethod -Uri "https://$IP/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='$DeviceGroupName']&key=$apiKey"
+        }
+        
+        return [xml]$response
+    }
+
+    Function Process-Objects($InputObject,$Type,$Label)
+    {
+        Write-Host "`nProcessing input from '$Label'"
+        $resultObjects = @()
+
+        foreach($node in $InputObject)
+        {
+            if($node.'ip-range' -ne $NULL)
+            {
+                $resultObjects = [array]$resultObjects + [PSCustomObject]@{Name=$node.Name;Type="$Type";Address=$node.'ip-range';}
+            }
+            elseif($node.'fqdn' -ne $NULL)
+            {
+                $resultObjects = [array]$resultObjects + [PSCustomObject]@{Name=$node.Name;Type="$Type";Address=$node.FQDN;}
+            }
+            elseif($node.'ip-netmask' -ne $NULL)
+            {
+                $resultObjects = [array]$resultObjects + [PSCustomObject]@{Name=$node.Name;Type="$Type";Address=$node.'ip-netmask';}
+            }
+        }
+
+        return $resultObjects
+    }
+
+    Function CompareNames-LocalToShared($LocalObjects, $SharedObjects)
+    {
+        $nameOnlyMatch = @()
+        $addressOnlyMatch = @()
+        $nameAndAddressMatch = @()
+
+        Write-Host "`nStarting name comparisons...`n"
+        
+       # Name match check
+       foreach($item in $LocalObjects.Name)
+        {
+            Write-Host "Comparing local object name " -NoNewline
+            Write-Host "$item " -NoNewline -ForegroundColor Yellow
+            Write-Host "to Shared object names..."
+
+            $matchFound = 0
+
+            foreach($entry in $SharedObjects.Name)
+            {
+                if($item.ToLower() -eq $entry.ToLower())
+                {
+                    # Get the index in the SharedObjects array
+                    # and retrieve the address value
+                    $entryIndex = $SharedObjects.Name.IndexOf($entry)
+                    $matchingSharedAddr = $SharedObjects[$entryIndex].Address
+
+                    if(@(($matchingSharedAddr|gm) -match '#text').Count -gt 0)
+                    {
+                        $matchingSharedAddr = $matchingSharedAddr.'#text'
+                    }
+
+                    # Get the index in the LocalObjects array
+                    # and retrieve the address value
+                    $itemIndex = $LocalObjects.Name.IndexOf($item)
+                    $matchingLocalAddr = $LocalObjects[$itemIndex].Address
+
+                    if(@(($matchingLocalAddr|gm) -match '#text').Count -gt 0)
+                    {
+                        $matchingLocalAddr = $matchingLocalAddr.'#text'
+                    }
+
+                    # Compare addresses between objects
+                    # If Name AND Address match
+                    if($matchingLocalAddr -eq $matchingSharedAddr)
+                    {
+                        Write-Host "`tDual match found!`r" -ForegroundColor Green -BackgroundColor Black
+                        $dualMatch = [array]$dualMatch + [PSCustomObject]@{MatchType='NameAndAddress';
+                                                                            LocalName=$item;
+                                                                            SharedName=$entry;
+                                                                            AddressLocal=$matchingLocalAddr;
+                                                                            AddressShared=$matchingSharedAddr}
+                        $matchFound++
+                    }
+                    # If Name match only
+                    else
+                    {
+                        Write-Host "`tName-only match found`r" -ForegroundColor Cyan -BackgroundColor Black
+                        $nameOnlyMatch = [array]$nameOnlyMatch + [PSCustomObject]@{MatchType='NameOnly';
+                                                                                    LocalName=$item;
+                                                                                    SharedName=$entry;
+                                                                                    AddressLocal=$matchingLocalAddr;
+                                                                                    AddressShared=$matchingSharedAddr}
+                        $matchFound++
+                    }
+                }
+            }
+
+            if($matchFound -lt 1)
+            {
+
+                $itemIndex = $LocalObjects.Name.Indexof($item)
+                Write-Host "`tNo name match found`r" -ForegroundColor Red -BackgroundColor Black
+                $localOnlyMatch = [Array]$localOnlyMatch + [PSCustomObject]@{MatchType='LocalOnly';
+                                                                                LocalName=$item;
+                                                                                SharedName='NONE';
+                                                                                AddressLocal=$LocalObjects[$itemIndex].Address;
+                                                                                AddressShared='NONE'}
+            }
+        }
+
+        return @($dualMatch,$nameOnlyMatch,$localOnlyMatch)
+    } 
+
+    Function CompareAddresses-LocalToShared($LocalObjects, $SharedObjects)
+    {
+        Write-Host "`nStarting address comparisons..."
+
+        for($i=0;$i -lt $LocalObjects.Count;$i++)
+        {
+            Write-Host "Comparing local address " -NoNewline
+            Write-Host "$($LocalObjects[$i].Address) " -NoNewline -ForegroundColor Yellow
+            Write-Host "to Shared object names..."
+
+            $matchFound = 0
+
+            for($j=0;$j -lt $SharedObjects.Count;$j++)
+            {
+                if($LocalObjects[$i].Address -eq $SharedObjects[$j].Address)
+                {
+                    # Get the names of each and compare
+                    $matchingSharedName = $SharedObjects[$j].Name 
+                    $matchingLocalName = $LocalObjects[$i].Name
+
+                    # Compare addresses between objects
+                    # If Name AND Address match
+                    if($matchingLocalName.ToLower() -eq $matchingSharedName.ToLower())
+                    {
+                        Write-Host "`tDual match found!`r" -ForegroundColor Green -BackgroundColor Black
+                        $dualMatch = [array]$dualMatch + [PSCustomObject]@{MatchType='NameAndAddress';
+                                                                            LocalName=$matchingLocalName;
+                                                                            SharedName=$matchingSharedName;
+                                                                            AddressLocal=$LocalObjects[$i].Address;
+                                                                            AddressShared=$SharedObjects[$j].Address}
+                        $matchFound++
+                    }
+                    # If Address match only
+                    else
+                    {
+                        Write-Host "`tAddress-only match found`r" -ForegroundColor Cyan -BackgroundColor Black
+                        $addressOnlyMatch = [array]$addressOnlyMatch + [PSCustomObject]@{MatchType='AddressOnly';
+                                                                                    LocalName=$matchingLocalName;
+                                                                                    SharedName=$matchingSharedName;
+                                                                                    AddressLocal=$LocalObjects[$i].Address;
+                                                                                    AddressShared=$SharedObjects[$j].Address}
+                        $matchFound++
+                    }
+                }         
+            }
+
+            if($matchFound -lt 1)
+            {
+                Write-Host "`tNo address match found`r" -ForegroundColor Red -BackgroundColor Black
+                $localOnlyMatch = [Array]$localOnlyMatch + [PSCustomObject]@{MatchType='LocalOnly';
+                                                                                LocalName=$LocalObjects[$i].Name;
+                                                                                SharedName='NONE';
+                                                                                AddressLocal=$LocalObjects[$i].Address;
+                                                                                AddressShared='NONE'}
+            }
+        }
+        
+        return @($dualMatch,$addressOnlyMatch,$localOnlyMatch)    
+    }
+
+    Function Get-InitialData($LocalIP)
+    {
+        $allSharedObjects = Get-AllSharedObjects
+        $script:allSharedNodes = $allSharedObjects.SelectNodes("/response/result/address/entry")
+        $processedShared = Process-Objects -InputObject $allSharedNodes -Type "Shared" -Label "Panorama"
+
+        [xml]$allLocalDomainAddresses = Get-AllLocalDomainAddresses -DeviceGroupName "vsys1" -IP "$LocalIP"
+        $allLocalDeviceNodes = $allLocalDomainAddresses.response.result.address.entry
+        $processedLocal = Process-Objects -InputObject $allLocalDeviceNodes -Type "Local" -Label "Some Local Label Name Here"
+
+        Get-Matches -Local $processedLocal -Shared $processedShared
+    }
+
+    Function Get-Matches($Local, $Shared)
+    {
+        # Check each Local object and see if there are matches between Name, Address, or Name+Address
+        # irrespective of case, and log results with appropriate identifiers
+
+        # Combine Names
+        $nameCompareMatches = CompareNames-LocalToShared -LocalObjects $Local -SharedObjects $Shared
+        $combinedNameMatches = $nameCompareMatches[0] + $nameCompareMatches[1]
+
+        # Combine addresses
+        $addressCompareMatches = CompareAddresses-LocalToShared -LocalObjects $Local -SharedObjects $Shared
+        $combinedAddressMatches = $addressCompareMatches[0] + $addressCompareMatches[1]
+        
+        # Combine LocalOnly, remove duplicates
+        $localOnlyMatches = $nameCompareMatches[2] + $addressCompareMatches[2] | Sort LocalName -Unique
+
+        $stagedPhaseMatches = $combinedNameMatches + $combinedAddressMatches + $localOnlyMatches
+
+        # Get objects that are Shared-Only
+        foreach($node in $script:allSharedNodes)
+        {
+            Write-Host "Checking for shared-only objects - Searching node: " -NoNewline
+            Write-Host "$($node.Name)" -ForegroundColor Yellow
+
+            if($node.'ip-range' -ne $NULL)
+            {
+                $nodeData = [PSCustomObject]@{Name=$node.Name;Address=$node.'ip-range';}
+            }
+            elseif($node.'fqdn' -ne $NULL)
+            {
+                $nodeData = [PSCustomObject]@{Name=$node.Name;Address=$node.FQDN;}
+            }
+            elseif($node.'ip-netmask' -ne $NULL)
+            {
+                $nodeData = [PSCustomObject]@{Name=$node.Name;Address=$node.'ip-netmask';}
+            }
+
+            
+            $matchCount = @($stagedPhaseMatches | ? {$_.Name -eq $nodeData.Name -or $_.Address -eq $nodeData.Address}).Count
+
+            if($matchCount -lt 1)
+            {
+                Write-Host "`tNo match found. Marking as 'SharedOnly'" -ForegroundColor Red -BackgroundColor Black
+                $sharedOnlyMatches = [array]$sharedOnlyMatches + [PSCustomObject]@{MatchType='SharedOnly';
+                                                                                    LocalName='NONE';
+                                                                                    SharedName=$nodeData.Name;
+                                                                                    AddressLocal='None';
+                                                                                    AddressShared=$nodeData.Address}
+            }
+        }
+
+        $allMatches = $stagedPhaseMatches + $sharedOnlyMatches
+        Export-Results -InputObject $allMatches
+    }
+    
+    Function Export-Results($InputObject)
+    {
+        $now = [DateTime]::Now.ToString("MM-dd-yyyy_hh-mm-ss")
+        $prefixName = "PaloCompareMatches_"
+        $extension = ".csv"
+        $filename = $prefixName + $now + $extension
+        $InputObject | Export-CSV -Path $ENV:USERPROFILE\Desktop\$filename -NoTypeInformation
+
+        Write-Host "`nFile exported to " -NoNewline
+        Write-Host "$ENV:USERPROFILE\Desktop\$filename" -ForegroundColor Green
+    }
+
+    Function Get-DuplicateAddresses($List,$GroupType)
+    {
+        if($GroupType -eq "ip-netmask")
+        {
+            $List.response.result.address.entry | Group-Object -Property $GroupType | Where-Object -FilterScript { $_.Count -gt 1 } | Select-Object -ExpandProperty Group
+        }
+    }
+}
+
+PROCESS
+{
+    Enable-TLS1.2
+    Trust-AllCertsPolicy
+    Set-APIKey
+    Null-DynamicVars
+    $allShared = Get-AllSharedObjects
+    $panoDupes1 = Get-DuplicateAddresses -List $allShared -GroupType "ip-netmask"
+
+    $panoDupes1 | Export-CSV -Path C:\users\cp41020\desktop\panoDuplicateSharedObjs.csv -NoTypeInformation
+    
+}
+
+END{}
