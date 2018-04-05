@@ -1,0 +1,92 @@
+[cmdletBinding()]
+    param(
+        [Parameter(Mandatory=$True,
+                    Position=0,
+                    ValueFromPipeline=$True,
+                    ValueFromPipelineByPropertyName=$True)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [ValidateScript(
+        {
+            if($userTest = Test-User $_)
+            {
+                $True
+            }
+            else
+            {
+                $False
+            }
+        })]
+        [String]$Identity,
+
+        [Parameter(Mandatory=$False,
+                    Position=1,
+                    ValueFromPipeline=$True,
+                    ValueFromPipelineByPropertyName=$True)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [ValidateSet("All","Security","Distribution")]
+        [Array]$GroupType="All"
+    )
+
+BEGIN
+{
+    Function Get-UserMemberships()
+    {
+        BEGIN
+        {
+            $results = @()
+        }
+        PROCESS
+        {
+            try
+            {
+                $userGroups = Get-ADUser -Identity $Identity -Properties MemberOf | Select MemberOf -ExpandProperty MemberOf
+                foreach($group in $userGroups)
+                {
+                    try
+                    {
+                        $groupData = Get-ADGroup -Identity $group -Properties GroupCategory
+                        $groupResult = [PSCustomObject]@{Name=$groupData.Name;GroupCategory=$groupData.GroupCategory}
+                        $results = [Array]$results + $groupResult
+                    }
+                    catch [Exception]
+                    {
+                        Write-CustomError -UserMessage "Group object $group not found" -ErrorObject $_ -FullDetail
+                    }
+                }
+
+                switch($GroupType)
+                {
+                    "All"
+                    {
+                        return $($results | Sort Category,Name)
+                    }
+
+                    "Security"
+                    {
+                     return $($results | ? {$_.GroupCategory -eq "Security"} | Sort Name)
+                    }
+
+                    "Distribution"
+                    {
+                        return $($results | ? {$_.GroupCategory -eq "Distribution"} | Sort Name)
+                    }
+                }
+            }
+            catch [Exception]
+            {
+                Write-Output "Identity $Identity not found"
+            }
+        }
+        END
+        {}
+    }
+}
+
+PROCESS
+{
+    Get-UserMemberships
+}
+
+END{}
