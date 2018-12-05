@@ -1,0 +1,49 @@
+Function Kill-ProcessByPortNumber
+{
+[CmdletBinding()]
+param(
+    [ValidateRange(80,60000)]
+    [Parameter(Mandatory)]
+    [Int]$Port,
+
+    [Parameter(Mandatory=$False)]
+    [regex]$MatchParameter="\d+$"
+)
+    Begin 
+    {
+        Write-Output "Getting matching ports"
+        $portsInUse = netstat -ano | ? {$_ -like "*0.0.0.0:$Port *"}
+        $ErrorActionPreference = 'Continue'
+    }
+    Process
+    {
+        $matchingPorts = $portsInUse | ? { $_ -match $MatchParameter}
+
+        if($matchingPorts -ne $null)
+        {
+            Write-Output "`nMatch(es) found: [$(@($matchingPorts).Count)]"
+
+            foreach($matchingPort in $matchingPorts)
+            {
+                try
+                {
+                    $processID = $matchingPort.split(" *")[-1]
+                    Write-Output "Attempting to kill process ID: $($processID)"
+                    taskkill /F /PID $processID
+                }
+                catch
+                {
+                    throw $_
+                }
+            }
+        }
+        else
+        {
+            Write-Output "No matches found!"
+        }
+    }
+    End{}
+}
+
+$userInput = Read-Host "Enter port to query"
+Kill-ProcessByPortNumber -Port $userInput
